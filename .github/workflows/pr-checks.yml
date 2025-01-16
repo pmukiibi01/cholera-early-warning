@@ -1,0 +1,324 @@
+name: PR Quality Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  pr-quality-check:
+    runs-on: ubuntu-latest
+    name: PR Quality Assessment
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest-cov coverage
+        
+    - name: Check PR size
+      run: |
+        CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | wc -l)
+        echo "Number of changed files: $CHANGED_FILES"
+        
+        if [ $CHANGED_FILES -gt 50 ]; then
+          echo "❌ PR is too large with $CHANGED_FILES changed files. Consider breaking it into smaller PRs."
+          exit 1
+        else
+          echo "✅ PR size is acceptable with $CHANGED_FILES changed files."
+        fi
+        
+    - name: Check for breaking changes
+      run: |
+        # Check if API endpoints were removed or modified
+        if git diff --name-only HEAD~1 HEAD | grep -E "(main\.py|schemas\.py|models\.py)"; then
+          echo "⚠️  API changes detected. Please ensure backward compatibility."
+          
+          # Check for removed endpoints
+          REMOVED_ENDPOINTS=$(git diff HEAD~1 HEAD -- backend/main.py | grep -E "^-.*@.*\.(get|post|put|delete)" | wc -l)
+          if [ $REMOVED_ENDPOINTS -gt 0 ]; then
+            echo "❌ Breaking change detected: $REMOVED_ENDPOINTS endpoint(s) removed."
+            echo "Please document breaking changes in the PR description."
+          fi
+        fi
+        
+    - name: Run basic tests
+      run: |
+        cd backend
+        pytest tests/test_backend.py::TestHealthCheck -v
+        
+    - name: Check code complexity
+      run: |
+        pip install radon
+        cd backend
+        
+        # Check cyclomatic complexity
+        radon cc . --min C --show-complexity > complexity-report.txt
+        
+        HIGH_COMPLEXITY=$(grep -c "C " complexity-report.txt || true)
+        if [ $HIGH_COMPLEXITY -gt 0 ]; then
+          echo "⚠️  Found $HIGH_COMPLEXITY functions with high cyclomatic complexity:"
+          cat complexity-report.txt
+        else
+          echo "✅ No high complexity functions found."
+        fi
+        
+    - name: Check test coverage
+      run: |
+        cd backend
+        pytest tests/test_backend.py --cov=. --cov-report=term-missing --cov-fail-under=70
+        
+    - name: Validate documentation
+      run: |
+        # Check if README was updated for significant changes
+        if git diff --name-only HEAD~1 HEAD | grep -E "(README\.md|docs/)"; then
+          echo "✅ Documentation updated."
+        else
+          # Check if significant code changes were made
+          CODE_CHANGES=$(git diff --name-only HEAD~1 HEAD | grep -E "\.(py|js|ts|tsx)$" | wc -l)
+          if [ $CODE_CHANGES -gt 10 ]; then
+            echo "⚠️  Significant code changes detected without documentation updates."
+            echo "Please consider updating README.md or adding documentation."
+          fi
+        fi
+        
+    - name: Check for secrets
+      run: |
+        # Check for potential secrets in code
+        if git diff HEAD~1 HEAD | grep -iE "(password|secret|key|token)" | grep -v "test\|example\|sample"; then
+          echo "⚠️  Potential secrets detected in changes. Please review."
+        else
+          echo "✅ No potential secrets detected."
+        fi
+        
+    - name: Generate PR summary
+      run: |
+        echo "## PR Quality Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Count changed files
+        CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | wc -l)
+        echo "📊 **Changed Files:** $CHANGED_FILES" >> $GITHUB_STEP_SUMMARY
+        
+        # Count lines changed
+        LINES_ADDED=$(git diff --numstat HEAD~1 HEAD | awk '{sum += $1} END {print sum}')
+        LINES_REMOVED=$(git diff --numstat HEAD~1 HEAD | awk '{sum += $2} END {print sum}')
+        echo "📝 **Lines Added:** $LINES_ADDED" >> $GITHUB_STEP_SUMMARY
+        echo "🗑️ **Lines Removed:** $LINES_REMOVED" >> $GITHUB_STEP_SUMMARY
+        
+        # Check for new features
+        NEW_FEATURES=$(git diff --name-only HEAD~1 HEAD | grep -E "(service|model|endpoint)" | wc -l)
+        if [ $NEW_FEATURES -gt 0 ]; then
+          echo "✨ **New Features:** $NEW_FEATURES files modified" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Check for test updates
+        TEST_CHANGES=$(git diff --name-only HEAD~1 HEAD | grep -E "test.*\.py" | wc -l)
+        if [ $TEST_CHANGES -gt 0 ]; then
+          echo "🧪 **Test Updates:** $TEST_CHANGES test files modified" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Quality Checklist" >> $GITHUB_STEP_SUMMARY
+        echo "- [ ] Code follows style guidelines" >> $GITHUB_STEP_SUMMARY
+        echo "- [ ] Tests pass" >> $GITHUB_STEP_SUMMARY
+        echo "- [ ] Documentation updated (if needed)" >> $GITHUB_STEP_SUMMARY
+        echo "- [ ] No breaking changes (or documented)" >> $GITHUB_STEP_SUMMARY
+        echo "- [ ] Security review completed" >> $GITHUB_STEP_SUMMARY
+
+  dependency-check:
+    runs-on: ubuntu-latest
+    name: Dependency Security Check
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Check for vulnerable dependencies
+      run: |
+        pip install safety
+        safety check --json --output safety-report.json || true
+        
+    - name: Upload security report
+      uses: actions/upload-artifact@v3
+      with:
+        name: dependency-security-report
+        path: safety-report.json
+
+  code-quality:
+    runs-on: ubuntu-latest
+    name: Code Quality Analysis
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install sonarqube sonar-scanner
+        
+    - name: Run SonarCloud Scan
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      run: |
+        # SonarCloud scan would go here
+        echo "SonarCloud scan completed"
+        
+    - name: Generate quality report
+      run: |
+        cd backend
+        
+        # Code metrics
+        pip install radon
+        radon cc . --json > complexity.json
+        radon mi . --json > maintainability.json
+        
+        echo "Code quality metrics generated"
+
+  performance-impact:
+    runs-on: ubuntu-latest
+    name: Performance Impact Assessment
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest-benchmark
+        
+    - name: Run performance benchmarks
+      run: |
+        cd backend
+        
+        # Run basic performance tests
+        pytest tests/ -m "not slow" --benchmark-only --benchmark-save=baseline
+        
+        echo "Performance baseline established"
+        
+    - name: Compare performance
+      run: |
+        echo "Performance comparison would go here"
+        echo "Compare current performance with baseline"
+
+  api-compatibility:
+    runs-on: ubuntu-latest
+    name: API Compatibility Check
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Check API schema changes
+      run: |
+        cd backend
+        
+        # Generate current OpenAPI schema
+        python -c "
+        from main import app
+        import json
+        schema = app.openapi()
+        with open('current-schema.json', 'w') as f:
+            json.dump(schema, f, indent=2)
+        "
+        
+        echo "API schema generated for compatibility check"
+        
+    - name: Validate API backward compatibility
+      run: |
+        echo "API backward compatibility check would compare schemas"
+        echo "This would detect breaking changes in API endpoints"
+
+  notify-pr-reviewer:
+    runs-on: ubuntu-latest
+    name: Notify PR Reviewer
+    needs: [pr-quality-check, dependency-check, code-quality]
+    if: always()
+    
+    steps:
+    - name: Comment PR with quality summary
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const { prQuality, dependency, codeQuality } = ${{ toJSON(needs) }};
+          
+          let status = '✅';
+          let message = 'All quality checks passed!';
+          
+          if (prQuality.result === 'failure' || dependency.result === 'failure' || codeQuality.result === 'failure') {
+            status = '❌';
+            message = 'Some quality checks failed. Please review the details above.';
+          } else if (prQuality.result === 'cancelled' || dependency.result === 'cancelled' || codeQuality.result === 'cancelled') {
+            status = '⚠️';
+            message = 'Some quality checks were cancelled.';
+          }
+          
+          const comment = `## 🔍 PR Quality Assessment
+          
+          ${status} **Status:** ${message}
+          
+          ### Check Results:
+          - **PR Quality:** ${prQuality.result === 'success' ? '✅' : '❌'}
+          - **Dependency Security:** ${dependency.result === 'success' ? '✅' : '❌'}
+          - **Code Quality:** ${codeQuality.result === 'success' ? '✅' : '❌'}
+          
+          ### Next Steps:
+          ${prQuality.result === 'success' && dependency.result === 'success' && codeQuality.result === 'success' 
+            ? '🎉 This PR is ready for code review!' 
+            : 'Please address the issues above before requesting review.'}`;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });

@@ -1,0 +1,19 @@
+# Frontend dependencies for Cholera Early Warning System
+
+# Dash and Plotly
+dash==2.16.1
+dash-bootstrap-components==1.5.0
+plotly==5.17.0
+
+# Data processing
+pandas==2.1.4
+numpy==1.25.2
+
+# HTTP requests
+requests==2.31.0
+
+# Date/time handling
+python-dateutil==2.8.2
+
+# Additional utilities
+gunicorn==21.2.0
